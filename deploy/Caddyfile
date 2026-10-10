@@ -1,0 +1,30 @@
+# Serves the React app + proxies the API on one HTTPS origin.
+# DOMAIN can be a real domain or <ip-with-dashes>.sslip.io; Caddy gets a Let's Encrypt cert automatically.
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Whole site is password protected (browser remembers it once you log in).
+	basic_auth {
+		{$APP_USER} {$APP_PASSWORD_HASH}
+	}
+
+	handle /api/* {
+		request_body {
+			max_size 200MB
+		}
+		reverse_proxy api:{$API_PORT:8000}
+	}
+
+	handle /health {
+		reverse_proxy api:{$API_PORT:8000}
+	}
+
+	handle {
+		root * /srv
+		@static path /assets/*
+		header @static Cache-Control "public, max-age=31536000, immutable"
+		header /sw.js Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

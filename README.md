@@ -19,29 +19,54 @@ Processing is a background queue in the API process (one job at a time, so a sma
 **Limits, honestly**: brand/model identification is only as good as what's visible — unbranded basics get a precise description + search query rather than a brand. Private posts, and sites that block datacenter IPs, may fail to download (Instagram in particular sometimes needs cookies); upload the file directly instead. Respect platform terms for anything you download.
 
 ```
-frontend/   Vite + React + Tailwind (dark mode)
-backend/    FastAPI app (app/main.py, scraper.py, tracker.py, storage.py) + Dockerfile
-db/init.sql PostgreSQL DDL (outfits, drops)
-docker-compose.yml  api + postgres
+setup.sh            one-command install on a server
+frontend/           Vite + React + Tailwind (dark mode), installable PWA with Android share target
+backend/            FastAPI (main, pipeline, media, analyzer, scraper, tracker, storage) + Dockerfile
+deploy/             Caddy config + web image (HTTPS, password, serves the app)
+db/init.sql         PostgreSQL DDL (outfits, drops) - idempotent
+docker-compose.yml  web + api + postgres
 ```
 
-## Deploy the backend (any VM: DigitalOcean / Linode / Lightsail)
+## Set it up (one command)
+
+You need: a small Ubuntu server (DigitalOcean/Linode/Lightsail, ~$12/mo, 2 GB RAM), a storage bucket with an access key (DigitalOcean Spaces / Linode Object Storage, ~$5/mo), and a Claude API key from console.anthropic.com. In your cloud firewall, allow ports 22, 80 and 443.
+
+SSH into the server and run:
 ```bash
-cp .env.example .env      # set POSTGRES_PASSWORD, S3_*, API_KEY, CORS_ORIGINS
-docker compose up -d --build
-curl localhost:8000/health
+git clone -b claude/tiktok-style-vault-fullstack-z37yj7 https://github.com/jschlesinger3/TikTok-Style-Vault-Dev.git
+cd TikTok-Style-Vault-Dev
+./setup.sh
 ```
-Schema is applied automatically on the first start. **Upgrading an existing database**: `docker compose exec -T db psql -U vault vault < db/init.sql` (safe to re-run; adds the new analysis columns). For a **managed** Postgres instead, run `psql "$DATABASE_URL" -f db/init.sql`, then run only the `api` service (`docker compose up -d --no-deps api`) with `DATABASE_URL` set in `.env` — but note compose overrides `DATABASE_URL` for `api`; edit that line in `docker-compose.yml` first.
+It installs Docker if needed, asks for a username/password and your keys, and prints your app's address, e.g. `https://203-0-113-7.sslip.io` (a free address based on your server IP; you can use your own domain instead). HTTPS certificates are automatic. Re-run `./setup.sh` any time to change settings; press Enter to keep each current value.
 
-Budget tip: a $6–12/mo VM + a $5/mo Spaces/Object Storage bucket covers this comfortably within $100.
+What runs: `web` (Caddy: HTTPS + password + the React app + `/api` proxy) → `api` (FastAPI + analysis queue) → `db` (Postgres). Only ports 80/443 are public.
 
-## Frontend
+**Updating later:** `git pull && docker compose up -d --build`.
+**Logs:** `docker compose logs -f api` (or `web`, `db`).
+**Backups:** your media is in the bucket; back up the database with `docker compose exec -T db pg_dump -U vault vault > vault-backup.sql`.
+
+## Phone
+
+Open your app address on your phone and log in once (the browser remembers it).
+
+**Android (Chrome):** menu ⋮ → *Add to Home screen* / *Install app*. Style Vault then shows up in the **Share** menu: in TikTok tap Share → *Style Vault* (you may need "More" the first time). It works for links from TikTok/Instagram/Pinterest, and for photos/videos shared from your gallery. The app opens, adds it, and starts identifying the pieces.
+
+**iPhone (Safari):** Share → *Add to Home Screen* for the app icon. iOS doesn't let web apps appear in the Share menu, so use a Shortcut to send links straight from TikTok:
+1. On your server, get your login code: `printf 'USERNAME:PASSWORD' | base64` (use your real username and password).
+2. Shortcuts app → **+** → tap the name → *Add to Style Vault*. Tap ⓘ → turn on **Show in Share Sheet**; set it to receive **URLs** and **Text**.
+3. Add action **Get URLs from Input**.
+4. Add action **Get Contents of URL**: URL `https://YOUR-ADDRESS/api/ingest/link`, Method **POST**, Headers: `Authorization` = `Basic <the code from step 1>`, Request Body **JSON** with one Text field `url` = *URLs* (the variable from step 3).
+5. Add action **Show Notification** → "Added to Style Vault".
+
+Now TikTok → Share → *Add to Style Vault*. (For photos/videos on iPhone, use the app's upload button, which can pick straight from Photos.)
+
+## Manual / local development
 ```bash
-cd frontend && cp .env.example .env && npm install
-npm run dev      # proxies /api to localhost:8000
-npm run build    # static files in dist/ — host on any static host or behind nginx/Caddy
+cp .env.example .env               # fill in values
+docker compose up -d --build db api
+cd frontend && npm install && npm run dev   # http://localhost:5173, proxies /api to :8000
 ```
-For production set `VITE_API_URL` to the public API URL (put the API behind HTTPS, e.g. Caddy) and add the frontend origin to `CORS_ORIGINS`. `VITE_API_KEY` is embedded in the JS bundle, so it only deters casual access — put real auth in front for anything sensitive.
+For a **managed** Postgres, run `psql "$DATABASE_URL" -f db/init.sql` and change the `DATABASE_URL` line under `api` in `docker-compose.yml`. Existing databases: re-run `db/init.sql` to add new columns (safe to repeat; `setup.sh` does this for you).
 
 ## API
 | Method | Path | Purpose |

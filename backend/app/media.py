@@ -2,6 +2,7 @@
 import asyncio
 import json
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -46,15 +47,20 @@ def cleanup(workdir: Path) -> None:
     shutil.rmtree(workdir, ignore_errors=True)
 
 
+def _name(cmd: tuple[str, ...]) -> str:
+    return "yt-dlp" if "yt_dlp" in cmd else Path(cmd[0]).name
+
+
 async def _run(*cmd: str, timeout: int) -> str:
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
         proc.kill()
-        raise MediaError(f"{cmd[0]} timed out")
+        raise MediaError(f"{_name(cmd)} timed out")
     if proc.returncode != 0:
-        raise MediaError(f"{cmd[0]} failed: {err.decode(errors='replace').strip().splitlines()[-1:] or ''}")
+        last = (err.decode(errors="replace").strip().splitlines() or [""])[-1]
+        raise MediaError(f"{_name(cmd)} failed: {last}"[:400])
     return out.decode(errors="replace")
 
 
@@ -91,7 +97,7 @@ async def download_link(url: str, workdir: Path) -> tuple[Path, str | None]:
     if Path(urlparse(url).path).suffix.lower() in IMAGE_EXTS | {".mp4", ".mov", ".webm"}:
         return await _download_direct(url, workdir / "source", max_bytes), None
     await _run(
-        "yt-dlp", "--no-playlist", "--no-progress", "--quiet", "--no-warnings",
+        sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-progress", "--quiet", "--no-warnings",
         "--max-filesize", f"{s.max_video_mb}M",
         "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080]/bv*+ba/b",
         "--merge-output-format", "mp4", "--write-info-json",

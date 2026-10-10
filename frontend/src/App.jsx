@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { consumeShare } from './share'
 import StyleVault from './components/StyleVault'
 import DropTracker from './components/DropTracker'
 import Catalog from './components/Catalog'
@@ -12,10 +13,21 @@ export default function App() {
   const [toasts, setToasts] = useState([])
   const notify = useCallback((kind, message) => setToasts((t) => [...t, { id: nextId++, kind, message }]), [])
   const close = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), [])
+  const [vaultKey, setVaultKey] = useState(0)
+
+  // Opened from the phone's share sheet? Add the shared link/files, then refresh the vault.
+  useEffect(() => {
+    consumeShare(notify).then((n) => {
+      if (n) {
+        setTab('vault'); setVaultKey((k) => k + 1)
+        notify('info', `Added ${n} from share — identifying pieces now`)
+      }
+    })
+  }, [notify])
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-neutral-800">
+      <header className="border-b border-neutral-800 pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="bg-gradient-to-r from-fuchsia-400 to-cyan-400 whitespace-nowrap bg-clip-text text-xl font-bold text-transparent">Style Vault</h1>
           <nav className="flex gap-1 overflow-x-auto rounded-lg bg-neutral-900 p-1">
@@ -27,7 +39,7 @@ export default function App() {
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6">
-        {tab === 'vault' && <StyleVault notify={notify} />}
+        {tab === 'vault' && <StyleVault key={vaultKey} notify={notify} />}
         {tab === 'catalog' && <Catalog notify={notify} />}
         {tab === 'drops' && <DropTracker notify={notify} />}
       </main>
