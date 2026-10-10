@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .input { @apply w-full rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-500; }
+  .btn { @apply rounded-lg px-4 py-2 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-primary { @apply btn bg-fuchsia-600 hover:bg-fuchsia-500 text-white; }
+  .btn-ghost { @apply btn bg-neutral-800 hover:bg-neutral-700 text-neutral-100; }
+}

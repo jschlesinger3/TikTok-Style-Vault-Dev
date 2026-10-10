@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vault}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-vault}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro  # runs only on first start of an empty volume
+    ports:
+      - "127.0.0.1:5432:5432"  # localhost only; never expose Postgres publicly
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      args:
+        INSTALL_PLAYWRIGHT: ${INSTALL_PLAYWRIGHT:-false}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Point at the bundled db container (overrides DATABASE_URL from .env).
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vault}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-vault}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8000}:${API_PORT:-8000}"
+
+volumes:
+  pgdata:
