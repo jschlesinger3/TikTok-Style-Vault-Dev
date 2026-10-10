@@ -53,35 +53,52 @@ function checkBody(body, { effort }) {
   assert.ok(!('temperature' in body))
   const sys = body.system[0].text
   assert.match(sys, /STYLE BRIEF/)
-  assert.match(sys, /tough, not sloppy/)
+  assert.match(sys, /Streetwear Tailoring/)
+  assert.doesNotMatch(sys, /ballhog/i)
   assert.doesNotMatch(sys, /paste the Style Brief|\{STYLE_BRIEF\}/)
   checkSchema(body.output_config.format.schema)
   JSON.parse(JSON.stringify(body)) // serialisable
 }
 
-test('ingest request: base64 image + caption', () => {
-  const [{ json }] = runNode(find('Code node: "Build ingest request"'), { image_b64: 'QUJD', mime_type: 'image/png', caption: 'new blazer', profile })
-  checkBody(json.body, { effort: 'medium' })
-  const [img, txt] = json.body.messages[0].content
-  assert.deepEqual(img.source, { type: 'base64', media_type: 'image/png', data: 'QUJD' })
-  assert.match(txt.text, /new blazer/)
-  assert.match(json.body.system[0].text, /olive, warm undertone/)
-  assert.deepEqual(json.body.output_config.format.schema.properties.items.items.properties.versatility_score.enum, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+test('prompts.md is generated from the current prompt files', () => {
+  const { build } = require('../scripts/build-prompts-md.js')
+  assert.equal(md, build(), 'prompts.md is stale - run: npm run build:prompts')
 })
 
-test('inspo request: with image, and link-only', () => {
-  const withImg = runNode(find('Code node: "Build inspo request"'), { ...ctx, image_b64: 'QUJD', photo: { mime_type: 'image/jpeg' }, notes: 'love it', source_url: null })[0].json.body
-  checkBody(withImg, { effort: 'medium' })
-  assert.equal(withImg.messages[0].content[0].type, 'image')
-  assert.match(withImg.messages[0].content[1].text, /double-breasted blazer[\s\S]*love it/)
-  const linkOnly = runNode(find('Code node: "Build inspo request"'), { ...ctx, photo: null, source_url: 'https://pin.it/x', notes: null })[0].json.body
-  assert.equal(linkOnly.messages[0].content.length, 1)
-  assert.match(linkOnly.messages[0].content[0].text, /cannot open it[\s\S]*No image was provided/)
+test('aesthetic: Streetwear Tailoring everywhere, no "ballhog"', () => {
+  const dir = path.join(__dirname, '..', 'prompts')
+  for (const f of fs.readdirSync(dir)) {
+    assert.doesNotMatch(fs.readFileSync(path.join(dir, f), 'utf8'), /ballhog/i, f)
+  }
+  assert.doesNotMatch(md, /ballhog/i)
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'seed.sql'), 'utf8'), /ballhog/i)
+  const brief = fs.readFileSync(path.join(dir, 'style_brief.md'), 'utf8')
+  for (const must of [
+    /Dean The Mean \(@deanthemean\)/, /Chris Heyn/, /silhouette and drape over logos/i,
+    /boxy vintage crewnecks/, /tailored work jackets/, /structured quarter-zips/, /muted knits/, /minimal hoodies/,
+    /baggy vintage denim/, /wide-leg tailored trousers/, /double-knee work pants/,
+    /chunky loafers/, /lug-sole derbies/, /archival runners/, /boots/,
+    /Fabric weight/, /Hem break/, /Silhouette contrast/,
+    /no Moncler badges/, /no Chrome Hearts overload/, /no Loro Piana flexes/,
+  ]) assert.match(brief, must)
+  // The old proportion rule contradicts the new formula (clean boxy top over wide bottoms) and must be gone.
+  for (const f of fs.readdirSync(dir)) {
+    const t = fs.readFileSync(path.join(dir, f), 'utf8')
+    assert.doesNotMatch(t, /boxy(-on-| top (plus|with) )baggy|avoid boxy|tapered trouser/i, f)
+  }
 })
 
 test('fit request includes event, closet ids, inspo and wears', () => {
   const body = runNode(find('Code node: "Build fit request"'), { ...ctx, event_context: 'rooftop dinner' })[0].json.body
   checkBody(body, { effort: 'high' })
+  const sys = body.system[0].text
+  assert.match(sys, /COUPLE COORDINATION/)
+  assert.match(sys, /Never matchy or kitsch/)
+  assert.match(sys, /ONE secondary colour from the partner's likely outfit/)
+  assert.match(sys, /if the partner is dressed up, elevate the client's streetwear with a structured\s+jacket/)
+  assert.match(sys, /Streetwear Tailoring/)
+  const pc = body.output_config.format.schema.properties.partner_coordination
+  assert.deepEqual(pc.anyOf.map((x) => x.type), ['null', 'object'])
   const t = body.messages[0].content
   assert.match(t, /Event: rooftop dinner/)
   assert.match(t, /11111111-2222-4333-8444-555555555555/)
@@ -109,7 +126,9 @@ test('parse node: extracts JSON text, skips thinking/fallback blocks, surfaces e
 test('fit validator: formats reply, rejects invented ids', () => {
   const validate = find('Code node: "Validate + format fit"')
   const result = {
-    event_read: { formality: 3, summary: 'smart-casual evening' }, look_name: 'Rooftop Navy',
+    event_read: { formality: 3, is_date: true, summary: 'smart-casual evening date' }, look_name: 'Rooftop Navy',
+    partner_coordination: { partner_likely_look: 'black slip dress, gold jewellery', assumed: false,
+      color_echo: 'gold watch to echo her jewellery', silhouette_balance: 'structured coat since she is dressed up' },
     outfit: {
       top: { item_id: null, why: 'no knit polo yet' },
       bottom: { item_id: null, why: 'needs pleated trouser' },
@@ -122,7 +141,10 @@ test('fit validator: formats reply, rejects invented ids', () => {
   const [{ json }] = runNode(validate, { result }, { 'Build fit request': ctx })
   assert.equal(json.chat_id, 42)
   assert.deepEqual(json.item_ids, [closet[1].id, closet[0].id])
+  assert.match(json.text, /💞 With your partner: black slip dress[\s\S]*Colour echo: gold watch[\s\S]*Balance: structured coat/)
   assert.match(json.text, /Rooftop Navy[\s\S]*Top: — nothing suitable[\s\S]*Footwear: brown leather loafers[\s\S]*Statement: navy double-breasted blazer[\s\S]*\/worn aaaaaaaa/)
+  const notDate = { ...result, partner_coordination: null }
+  assert.doesNotMatch(runNode(validate, { result: notDate }, { 'Build fit request': ctx })[0].json.text, /partner/)
   const bad = structuredClone(result); bad.outfit.top.item_id = '99999999-9999-4999-8999-999999999999'
   assert.throws(() => runNode(validate, { result: bad }, { 'Build fit request': ctx }), /unknown item ids/)
 })

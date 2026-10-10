@@ -14,37 +14,41 @@ export function extractUrl(text) {
   return m ? m[0].replace(/[).,!?]+$/, '') : null
 }
 
-/** If we were opened via the share sheet, send everything to the vault. Returns #items added. */
-export async function consumeShare(notify) {
+/** If opened from the share sheet, return what was shared: { link, files } (null otherwise). */
+export async function readShare() {
   const params = new URLSearchParams(location.search)
-  if (!params.has('shared')) return 0
-  history.replaceState(null, '', '/')
-  if (!('caches' in window)) return 0
+  if (!params.has('shared')) return null
+  params.delete('shared')
+  history.replaceState(null, '', location.pathname + (params.toString() ? `?${params}` : ''))
+  if (!('caches' in window)) return null
   const cache = await caches.open(SHARE_CACHE)
   const metaRes = await cache.match('/shared/meta')
-  if (!metaRes) return 0
+  if (!metaRes) return null
   const { text, count } = await metaRes.json()
-  let added = 0
-  const link = extractUrl(text)
-  try {
-    if (link && !count) {
-      await api.ingestLink(link); added++
-    }
-    for (let i = 0; i < count; i++) {
-      const res = await cache.match(`/shared/file-${i}`)
-      if (!res) continue
-      const blob = await res.blob()
-      const name = decodeURIComponent(res.headers.get('X-File-Name') || `shared-${i}`)
-      const form = new FormData()
-      form.append('file', new File([blob], name, { type: blob.type }))
-      if (link) form.append('original_source_url', link)
-      await api.upload(form); added++
-    }
-    if (!added) notify('error', 'Nothing to add — share a link, photo or video')
-  } catch (err) {
-    notify('error', `Couldn't add shared item: ${err.message}`)
-  } finally {
-    await caches.delete(SHARE_CACHE)
+  const files = []
+  for (let i = 0; i < count; i++) {
+    const res = await cache.match(`/shared/file-${i}`)
+    if (!res) continue
+    const blob = await res.blob()
+    const name = decodeURIComponent(res.headers.get('X-File-Name') || `shared-${i}`)
+    files.push(new File([blob], name, { type: blob.type }))
   }
-  return added
+  await caches.delete(SHARE_CACHE)
+  return { link: extractUrl(text), files }
+}
+
+/** Queue shared content for analysis as closet pieces or inspo. Returns how many were queued. */
+export async function submitShare({ link, files }, kind) {
+  let n = 0
+  if (!files.length && link) {
+    await api.ingestLink(link, kind); n++
+  }
+  for (const f of files) {
+    const form = new FormData()
+    form.append('file', f)
+    form.append('kind', kind)
+    if (link) form.append('source_url', link)
+    await api.upload(form); n++
+  }
+  return n
 }

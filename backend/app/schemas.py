@@ -1,16 +1,10 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl
 
 DropStatus = Literal["unknown", "upcoming", "live", "sold_out", "error"]
-
-
-class OutfitUpdate(BaseModel):
-    aesthetic_tags: list[str] | None = None
-    clothing_items: list[dict[str, Any]] | None = None
-    original_source_url: str | None = None
 
 
 class DropCreate(BaseModel):

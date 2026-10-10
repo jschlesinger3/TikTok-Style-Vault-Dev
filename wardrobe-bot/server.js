@@ -1,15 +1,15 @@
-// Telegram webhook receiver -> n8n forwarder for the wardrobe stylist bot.
+// Telegram webhook receiver for the wardrobe stylist bot.
 //
 // Telegram POSTs every update here. We verify it really came from Telegram, answer 200 at once
-// (so Telegram never retries), then normalise the update and forward it to the matching n8n webhook:
-//   photo / image file          -> N8N_INGEST_URL   (adds a closet item)
-//   photo captioned "inspo ..." -> N8N_INSPO_URL    (inspiration board)
-//   /inspo <link> [notes]       -> N8N_INSPO_URL
-//   /fit [context]              -> N8N_FIT_URL
-//   /worn <item ids> [8/10] [notes] -> N8N_WORN_URL
-//   /purge [item ids]           -> N8N_PURGE_URL
-//   /audit [focus]              -> N8N_AUDIT_URL    (full closet rework plan)
-// n8n does the AI + database work and replies to the user itself (it gets chat_id in every payload).
+// (so Telegram never retries), then normalise the update and forward it:
+//   photo / video / image file           -> INGEST_URL  (Style Vault analyses it into your closet)
+//   photo/video captioned "inspo ..."    -> INSPO_URL   (Style Vault adds it to the inspo board)
+//   a pasted link, or /inspo <link>      -> INSPO_URL
+//   /fit [context]                       -> N8N_FIT_URL
+//   /worn <item ids> [8/10] [notes]      -> N8N_WORN_URL
+//   /purge [item ids]                    -> N8N_PURGE_URL
+//   /audit [focus]                       -> N8N_AUDIT_URL (full closet rework plan)
+// The receivers reply to the user themselves (every payload carries chat_id). All calls carry X-Bot-Secret.
 'use strict'
 
 const crypto = require('node:crypto')
@@ -23,10 +23,10 @@ const config = {
   webhookSecret: env('TELEGRAM_WEBHOOK_SECRET', ''),
   allowedChatIds: new Set(env('ALLOWED_CHAT_IDS', '').split(',').map((s) => s.trim()).filter(Boolean)),
   telegramApi: env('TELEGRAM_API_BASE', 'https://api.telegram.org'),
-  n8nSecret: env('N8N_SHARED_SECRET', ''),
+  sharedSecret: env('BOT_SHARED_SECRET', env('N8N_SHARED_SECRET', '')),
   n8n: {
-    ingest: env('N8N_INGEST_URL', ''),
-    inspo: env('N8N_INSPO_URL', ''),
+    ingest: env('INGEST_URL', env('N8N_INGEST_URL', '')),
+    inspo: env('INSPO_URL', env('N8N_INSPO_URL', '')),
     fit: env('N8N_FIT_URL', ''),
     worn: env('N8N_WORN_URL', ''),
     purge: env('N8N_PURGE_URL', ''),
@@ -42,8 +42,8 @@ const INSPO_CAPTION_RE = /^\s*#?inspo\b[\s:,-]*/i
 
 const HELP = [
   'Wardrobe stylist commands:',
-  '📸 Send a photo of one of your pieces to add it to your closet.',
-  '✨ Send a photo captioned "inspo" (or /inspo <link>) to save inspiration.',
+  '📸 Send a photo or video of your pieces to add them to your closet.',
+  '✨ Paste a TikTok/IG/Pinterest link, or send a photo captioned "inspo", to save inspiration.',
   '/fit <event> — outfit for an occasion, e.g. /fit rooftop dinner, 18°C',
   '/worn <item ids> [8/10] [notes] — log what you wore (+ optional rating)',
   '/audit [focus] — full closet rework: keep / tailor / purge + what to buy',
@@ -102,15 +102,19 @@ function splitIds(args) {
   return { ids, notes: notes || null }
 }
 
-/** Largest photo size, or an image sent "as file" (uncompressed). */
-function pickImage(message) {
+/** Largest photo size, a video, or an image/video sent "as file" (uncompressed). */
+function pickMedia(message) {
   if (Array.isArray(message.photo) && message.photo.length) {
     const p = message.photo.reduce((a, b) => ((b.width * b.height) > (a.width * a.height) ? b : a))
-    return { file_id: p.file_id, file_unique_id: p.file_unique_id, width: p.width, height: p.height, mime_type: 'image/jpeg' }
+    return { kind: 'image', file_id: p.file_id, file_unique_id: p.file_unique_id, width: p.width, height: p.height, mime_type: 'image/jpeg' }
+  }
+  const v = message.video
+  if (v) {
+    return { kind: 'video', file_id: v.file_id, file_unique_id: v.file_unique_id, mime_type: v.mime_type || 'video/mp4', duration: v.duration }
   }
   const d = message.document
-  if (d && /^image\//.test(d.mime_type || '')) {
-    return { file_id: d.file_id, file_unique_id: d.file_unique_id, mime_type: d.mime_type, file_name: d.file_name }
+  if (d && /^(image|video)\//.test(d.mime_type || '')) {
+    return { kind: d.mime_type.startsWith('video') ? 'video' : 'image', file_id: d.file_id, file_unique_id: d.file_unique_id, mime_type: d.mime_type, file_name: d.file_name }
   }
   return null
 }
@@ -135,27 +139,33 @@ async function buildForward(update) {
   if (!message) return null // edits, reactions, etc. are ignored
 
   const base = baseFields(update, message)
-  const image = pickImage(message)
-  if (image) {
-    const file = await resolveFile(image.file_id)
+  const found = pickMedia(message)
+  if (found) {
+    const file = await resolveFile(found.file_id)
     const caption = message.caption?.trim() || ''
     if (INSPO_CAPTION_RE.test(caption)) {
       const notes = caption.replace(INSPO_CAPTION_RE, '').trim()
       return {
         route: 'inspo',
-        payload: { type: 'inspo', ...base, photo: { ...image, ...file }, source_url: notes.match(URL_RE)?.[0] || null, notes: notes || null },
+        payload: { type: 'inspo', ...base, media: { ...found, ...file }, source_url: notes.match(URL_RE)?.[0] || null, notes: notes || null },
       }
     }
     return {
       route: 'ingest',
-      payload: { type: 'ingest', ...base, photo: { ...image, ...file }, caption: caption || null },
+      payload: { type: 'ingest', ...base, media: { ...found, ...file }, caption: caption || null },
     }
   }
 
   const cmd = parseCommand(message.text)
   if (!cmd) {
-    if (message.document || message.video || message.animation) {
-      return { reply: 'Please send clothing photos as a photo (or an image file).' }
+    // A pasted TikTok/IG/Pinterest link (with or without a comment) goes to the inspo board.
+    const url = message.text?.match(URL_RE)?.[0]
+    if (url) {
+      const notes = message.text.replace(url, ' ').replace(/\s+/g, ' ').trim() || null
+      return { route: 'inspo', payload: { type: 'inspo', ...base, media: null, source_url: url, notes } }
+    }
+    if (message.document || message.animation) {
+      return { reply: 'Send clothing as a photo or video (or an image/video file).' }
     }
     return { reply: HELP }
   }
@@ -186,7 +196,7 @@ async function buildForward(update) {
       const url = cmd.args.match(URL_RE)?.[0]
       if (!url) return { reply: 'Send an inspo photo with the caption "inspo", or: /inspo <link> [what you like about it]' }
       const notes = cmd.args.replace(url, ' ').replace(/\s+/g, ' ').trim() || null
-      return { route: 'inspo', payload: { type: 'inspo', ...base, photo: null, source_url: url, notes } }
+      return { route: 'inspo', payload: { type: 'inspo', ...base, media: null, source_url: url, notes } }
     }
     case 'audit':
       return { route: 'audit', payload: { type: 'audit', ...base, focus: cmd.args || null } }
@@ -208,9 +218,9 @@ async function buildForward(update) {
 
 async function forwardToN8n(route, payload) {
   const url = config.n8n[route]
-  if (!url) throw new Error(`N8N_${route.toUpperCase()}_URL is not configured`)
+  if (!url) throw new Error(`No URL configured for the ${route} route`)
   const headers = { 'Content-Type': 'application/json' }
-  if (config.n8nSecret) headers['X-Bot-Secret'] = config.n8nSecret
+  if (config.sharedSecret) headers['X-Bot-Secret'] = config.sharedSecret
 
   let lastErr
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -254,16 +264,16 @@ async function handleUpdate(update) {
     action = await buildForward(update)
   } catch (err) {
     console.error('Could not process update', update.update_id, err.message)
-    return reply(message.chat.id, "⚠️ Couldn't fetch that photo from Telegram. Please try again.", message.message_id)
+    return reply(message.chat.id, "⚠️ Couldn't fetch that from Telegram (bots can only download files up to 20 MB). Please try again or send a link.", message.message_id)
   }
   if (!action) return
   if (action.reply) return reply(message.chat.id, action.reply, message.message_id)
 
   try {
     await forwardToN8n(action.route, action.payload)
-    console.log(`update ${update.update_id} -> n8n ${action.route}`)
+    console.log(`update ${update.update_id} -> ${action.route}`)
   } catch (err) {
-    console.error(`Forward to n8n ${action.route} failed:`, err.message)
+    console.error(`Forward to ${action.route} failed:`, err.message)
     await reply(message.chat.id, '⚠️ The stylist engine is unreachable right now. Please try again in a minute.', message.message_id)
   }
 }
@@ -300,9 +310,13 @@ function createApp() {
 }
 
 function checkConfig() {
-  const missing = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET', 'N8N_INGEST_URL', 'N8N_INSPO_URL', 'N8N_FIT_URL',
-    'N8N_WORN_URL', 'N8N_PURGE_URL', 'N8N_AUDIT_URL']
-    .filter((k) => !process.env[k])
+  const missing = []
+  for (const k of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET', 'N8N_FIT_URL', 'N8N_WORN_URL', 'N8N_PURGE_URL', 'N8N_AUDIT_URL']) {
+    if (!process.env[k]) missing.push(k)
+  }
+  if (!config.n8n.ingest) missing.push('INGEST_URL')
+  if (!config.n8n.inspo) missing.push('INSPO_URL')
+  if (!config.sharedSecret) missing.push('BOT_SHARED_SECRET')
   if (missing.length) {
     console.error(`Missing required env vars: ${missing.join(', ')} (see .env.example)`)
     process.exit(1)
@@ -317,4 +331,4 @@ if (require.main === module) {
   createApp().listen(config.port, () => console.log(`Wardrobe bot webhook listening on :${config.port}`))
 }
 
-module.exports = { createApp, buildForward, parseCommand, splitIds, pickImage, handleUpdate, config }
+module.exports = { createApp, buildForward, parseCommand, splitIds, pickMedia, handleUpdate, config }

@@ -15,15 +15,34 @@ async function request(path, { json, form, ...opts } = {}) {
   return res.status === 204 ? null : res.json()
 }
 
+const qs = (params) => {
+  const p = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== ''))
+  return p.toString() ? `?${p}` : ''
+}
+
 export const api = {
-  outfits: (tag) => request('/api/outfits' + (tag ? `?tag=${encodeURIComponent(tag)}` : '')),
+  // ingestion
   upload: (form) => request('/api/upload', { method: 'POST', form }),
-  updateOutfit: (id, patch) => request(`/api/outfits/${id}`, { method: 'PATCH', json: patch }),
-  deleteOutfit: (id) => request(`/api/outfits/${id}`, { method: 'DELETE' }),
-  ingestLink: (url, aesthetic_tags = []) => request('/api/ingest/link', { method: 'POST', json: { url, aesthetic_tags } }),
-  reanalyze: (id) => request(`/api/outfits/${id}/reanalyze`, { method: 'POST' }),
-  catalog: (category) => request('/api/catalog' + (category ? `?category=${encodeURIComponent(category)}` : '')),
+  ingestLink: (url, kind = 'inspo', notes = '') => request('/api/ingest/link', { method: 'POST', json: { url, kind, notes } }),
+  jobs: () => request('/api/jobs'),
+  retryJob: (id) => request(`/api/jobs/${id}/retry`, { method: 'POST' }),
+  dismissJob: (id) => request(`/api/jobs/${id}`, { method: 'DELETE' }),
+  // closet
+  items: (params = {}) => request('/api/items' + qs(params)),
+  updateItem: (id, patch) => request(`/api/items/${id}`, { method: 'PATCH', json: patch }),
+  deleteItem: (id) => request(`/api/items/${id}`, { method: 'DELETE' }),
   tags: () => request('/api/tags'),
+  // inspo
+  inspo: (status = 'active') => request('/api/inspo' + qs({ status })),
+  updateInspo: (id, patch) => request(`/api/inspo/${id}`, { method: 'PATCH', json: patch }),
+  deleteInspo: (id) => request(`/api/inspo/${id}`, { method: 'DELETE' }),
+  // profile / wear / overview
+  profile: () => request('/api/profile'),
+  saveProfile: (p) => request('/api/profile', { method: 'PUT', json: p }),
+  wearLogs: (days = 60) => request('/api/wear-logs' + qs({ days })),
+  logWear: (w) => request('/api/wear-logs', { method: 'POST', json: w }),
+  overview: () => request('/api/overview'),
+  // drops
   drops: () => request('/api/drops'),
   addDrop: (d) => request('/api/drops', { method: 'POST', json: d }),
   deleteDrop: (id) => request(`/api/drops/${id}`, { method: 'DELETE' }),

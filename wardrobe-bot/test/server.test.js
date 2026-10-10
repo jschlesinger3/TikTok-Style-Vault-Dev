@@ -36,8 +36,8 @@ test.before(async () => {
   const n8nUrl = `http://127.0.0.1:${n8n.address().port}`
   Object.assign(process.env, {
     TELEGRAM_BOT_TOKEN: '123:ABC', TELEGRAM_WEBHOOK_SECRET: SECRET, ALLOWED_CHAT_IDS: '42',
-    TELEGRAM_API_BASE: `http://127.0.0.1:${tg.address().port}`, N8N_SHARED_SECRET: 'n8n-secret',
-    N8N_INGEST_URL: `${n8nUrl}/ingest`, N8N_INSPO_URL: `${n8nUrl}/inspo`, N8N_FIT_URL: `${n8nUrl}/fit`,
+    TELEGRAM_API_BASE: `http://127.0.0.1:${tg.address().port}`, BOT_SHARED_SECRET: 'n8n-secret',
+    INGEST_URL: `${n8nUrl}/ingest`, INSPO_URL: `${n8nUrl}/inspo`, N8N_FIT_URL: `${n8nUrl}/fit`,
     N8N_WORN_URL: `${n8nUrl}/worn`, N8N_PURGE_URL: `${n8nUrl}/purge`, N8N_AUDIT_URL: `${n8nUrl}/audit`,
     FORWARD_TIMEOUT_MS: '2000',
   })
@@ -80,8 +80,8 @@ test('photo -> ingest with largest size and file URL', async () => {
   assert.equal(f.secret, 'n8n-secret')
   assert.equal(f.body.type, 'ingest')
   assert.equal(f.body.chat_id, 42)
-  assert.equal(f.body.photo.file_id, 'big')
-  assert.match(f.body.photo.file_url, /\/file\/bot123:ABC\/photos\/file_7\.jpg$/)
+  assert.equal(f.body.media.file_id, 'big')
+  assert.match(f.body.media.file_url, /\/file\/bot123:ABC\/photos\/file_7\.jpg$/)
   assert.equal(f.body.caption, 'new blazer')
 })
 
@@ -90,7 +90,7 @@ test('image sent as a file is ingested too', async () => {
   await post(msg({ document: { file_id: 'doc1', file_unique_id: 'd', mime_type: 'image/png', file_name: 'x.png' } }))
   await settle()
   assert.equal(received.n8n[0].path, '/ingest')
-  assert.equal(received.n8n[0].body.photo.mime_type, 'image/png')
+  assert.equal(received.n8n[0].body.media.mime_type, 'image/png')
 })
 
 test('photo captioned inspo -> inspo route with notes and link', async () => {
@@ -108,8 +108,28 @@ test('/inspo <link> without a photo', async () => {
   await post(msg({ text: '/inspo https://pin.it/xyz the trouser drape' }))
   await settle()
   assert.deepEqual(
-    { path: received.n8n[0].path, photo: received.n8n[0].body.photo, url: received.n8n[0].body.source_url, notes: received.n8n[0].body.notes },
+    { path: received.n8n[0].path, photo: received.n8n[0].body.media, url: received.n8n[0].body.source_url, notes: received.n8n[0].body.notes },
     { path: '/inspo', photo: null, url: 'https://pin.it/xyz', notes: 'the trouser drape' })
+})
+
+test('video -> ingest as video', async () => {
+  reset()
+  await post(msg({ video: { file_id: 'vid', file_unique_id: 'v', mime_type: 'video/mp4', duration: 12 } }))
+  await settle()
+  assert.equal(received.n8n[0].path, '/ingest')
+  assert.equal(received.n8n[0].body.media.kind, 'video')
+  assert.match(received.n8n[0].body.media.file_url, /file_7\.jpg$|photos\/file_7/)
+})
+
+test('a pasted TikTok link (no command) -> inspo', async () => {
+  reset()
+  await post(msg({ text: 'this fit 🔥 https://www.tiktok.com/@x/video/123?lang=en' }))
+  await settle()
+  const [f] = received.n8n
+  assert.equal(f.path, '/inspo')
+  assert.equal(f.body.source_url, 'https://www.tiktok.com/@x/video/123?lang=en')
+  assert.equal(f.body.notes, 'this fit 🔥')
+  assert.equal(f.body.media, null)
 })
 
 test('/fit with bot-name suffix and context', async () => {

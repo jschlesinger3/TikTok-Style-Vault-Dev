@@ -1,14 +1,23 @@
--- Wardrobe Stylist Bot - PostgreSQL schema (PostgreSQL 13+; gen_random_uuid() is built in).
--- Idempotent: safe to run again.  psql "$DATABASE_URL" -f schema.sql
+-- Wardrobe system - the single PostgreSQL schema shared by the Telegram bot (+ n8n) and the Style Vault
+-- dashboard. PostgreSQL 13+ (gen_random_uuid() is built in).
+-- Idempotent: safe to run again, also to upgrade an existing database.
+--   psql "$DATABASE_URL" -f wardrobe-bot/schema.sql
+--
+--   items          your closet (written by Style Vault analysis; read by the stylist, audit, dashboard)
+--   user_profile   build / colouring / aesthetic / colour rules (single row)
+--   wear_logs      what you wore + ratings (bot /worn, dashboard)
+--   inspo          saved looks broken down (Style Vault scraper, bot "inspo" photos/links)
+--   closet_audits  /audit results
+--   ingest_jobs    Style Vault's analysis queue (uploads, links, Telegram photos/videos)
+--   drops          Drop Tracker
 
 -- ---------------------------------------------------------------------------
 -- items: one row per piece of clothing in the closet
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS items (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- Durable reference to the photo. Recommended: 'tg:<telegram file_id>' (the bot can re-send it any time
-    -- with sendPhoto) or your own bucket URL. Never store api.telegram.org/file/bot<TOKEN>/... links:
-    -- they contain the bot token and expire.
+    -- Style Vault stores the photo (or a video frame) and puts its URL here: '/media/...' for local storage
+    -- or a bucket URL. Never store api.telegram.org/file/bot<TOKEN>/... links: they contain the token and expire.
     image_url         TEXT        NOT NULL,
     category          TEXT        NOT NULL
         CHECK (category IN ('top', 'bottom', 'outerwear', 'tailoring', 'footwear', 'accessory', 'other')),
@@ -90,10 +99,17 @@ CREATE TRIGGER trg_wear_logs_apply
     BEFORE INSERT OR UPDATE OF item_ids ON wear_logs
     FOR EACH ROW EXECUTE FUNCTION wear_logs_apply();
 
+-- Style Vault additions (nullable; safe on existing databases)
+ALTER TABLE items ADD COLUMN IF NOT EXISTS brand         TEXT;  -- only when identifiable (logo, tag, signature design)
+ALTER TABLE items ADD COLUMN IF NOT EXISTS product_name  TEXT;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS video_url     TEXT;  -- source clip if added from a video
+ALTER TABLE items ADD COLUMN IF NOT EXISTS source_job_id UUID;  -- ingest_jobs.id that created it
+
 -- Handy view for the stylist: what's available to wear, least-recently-worn first.
-CREATE OR REPLACE VIEW closet_available AS
+DROP VIEW IF EXISTS closet_available;
+CREATE VIEW closet_available AS
 SELECT id, category, sub_category, primary_color, secondary_color, fabric, silhouette,
-       aesthetic_tags, detailed_desc, versatility_score, last_worn, wear_count
+       aesthetic_tags, detailed_desc, versatility_score, last_worn, wear_count, brand, product_name
   FROM items
  WHERE status = 'active'
  ORDER BY last_worn NULLS FIRST, versatility_score DESC NULLS LAST;
@@ -118,6 +134,11 @@ CREATE TABLE IF NOT EXISTS inspo (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_inspo_created ON inspo (created_at DESC) WHERE status = 'active';
+ALTER TABLE inspo ADD COLUMN IF NOT EXISTS video_url      TEXT;
+ALTER TABLE inspo ADD COLUMN IF NOT EXISTS caption        TEXT;   -- post caption pulled from TikTok/IG
+ALTER TABLE inspo ADD COLUMN IF NOT EXISTS recreate_with  JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE inspo ADD COLUMN IF NOT EXISTS missing_pieces JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE inspo ADD COLUMN IF NOT EXISTS source_job_id  UUID;
 
 -- ---------------------------------------------------------------------------
 -- closet_audits: each /audit run (the closet rework plan), kept so you can track progress.
@@ -132,3 +153,44 @@ CREATE TABLE IF NOT EXISTS closet_audits (
     outfit_formulas JSONB      NOT NULL DEFAULT '[]'::jsonb,  -- repeatable uniforms from what you own
     raw_response   JSONB
 );
+
+-- ---------------------------------------------------------------------------
+-- ingest_jobs: Style Vault's analysis queue. Every photo/video/link - from the dashboard or from Telegram -
+-- becomes a job; when done it points at the items / inspo rows it created.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind                TEXT        NOT NULL CHECK (kind IN ('closet', 'inspo')),
+    source              TEXT        NOT NULL CHECK (source IN ('upload', 'link', 'telegram')),
+    source_url          TEXT,                     -- TikTok/IG/Pinterest/direct link
+    media_url           TEXT,                     -- stored image (or video cover frame)
+    video_url           TEXT,                     -- stored original video
+    media_type          TEXT        CHECK (media_type IN ('image', 'video')),
+    notes               TEXT,                     -- what the user typed with it
+    caption             TEXT,                     -- caption pulled from the post
+    telegram_chat_id    BIGINT,                   -- reply here when done (Telegram jobs)
+    telegram_message_id BIGINT,
+    status              TEXT        NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'done', 'failed')),
+    error               TEXT,
+    result_item_ids     UUID[]      NOT NULL DEFAULT '{}',
+    result_inspo_id     UUID,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_jobs_open ON ingest_jobs (created_at DESC) WHERE status <> 'done';
+
+-- ---------------------------------------------------------------------------
+-- drops: Style Vault Drop Tracker
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS drops (
+    id               BIGSERIAL PRIMARY KEY,
+    creator_name     TEXT          NOT NULL,
+    collection_title TEXT          NOT NULL,
+    target_url       TEXT          NOT NULL UNIQUE,
+    drop_timestamp   TIMESTAMPTZ,
+    last_known_price NUMERIC(10,2),
+    status           TEXT          NOT NULL DEFAULT 'unknown'
+        CHECK (status IN ('unknown', 'upcoming', 'live', 'sold_out', 'error'))
+);
+CREATE INDEX IF NOT EXISTS idx_drops_status ON drops (status);
