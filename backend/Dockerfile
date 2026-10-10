@@ -6,6 +6,10 @@ ARG INSTALL_PLAYWRIGHT=false
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /srv
 
+# ffmpeg: frame extraction + merging yt-dlp video/audio streams
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
  && if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \

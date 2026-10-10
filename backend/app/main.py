@@ -5,14 +5,16 @@ import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import storage
+from pydantic import BaseModel, HttpUrl
+
+from . import media
 from .config import get_settings
 from .db import close_pool, init_pool, pool
 from .schemas import CheckRequest, CheckResult, DropCreate, DropOut, OutfitUpdate
 from .scraper import ScrapeError, assert_public_url
+from .pipeline import Job, enqueue, recover_interrupted, worker
 from .tracker import check_drops, periodic_loop
 
 logging.basicConfig(level=logging.INFO)
@@ -21,9 +23,11 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_pool()
-    task = asyncio.create_task(periodic_loop())
+    tasks = [asyncio.create_task(periodic_loop()), asyncio.create_task(worker())]
+    await recover_interrupted()
     yield
-    task.cancel()
+    for t in tasks:
+        t.cancel()
     await close_pool()
 
 
@@ -63,40 +67,129 @@ def _clean_tags(tags: list[str]) -> list[str]:
 
 # ---------- Style Vault ----------
 
-@app.post("/api/upload", dependencies=api, status_code=201)
+@app.post("/api/upload", dependencies=api, status_code=202)
 async def upload(
     file: UploadFile = File(...),
     aesthetic_tags: str = Form(""),  # comma separated
     original_source_url: str = Form(""),
-    clothing_items: str = Form("[]"),  # JSON array
+    clothing_items: str = Form("[]"),  # JSON array of {name, url?}
 ):
+    """Photo or video of an outfit / item. Stored + analysed in the background; poll /api/outfits."""
     s = get_settings()
     if not s.s3_bucket:
         raise HTTPException(503, "S3 storage is not configured")
-    data = await file.read(s.max_upload_mb * 1024 * 1024 + 1)
-    if len(data) > s.max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, f"File exceeds {s.max_upload_mb}MB")
-    kind = storage.sniff_image(data)
-    if not kind:
-        raise HTTPException(415, "Unsupported image type (use JPEG, PNG, GIF or WebP)")
+    items = _parse_items(clothing_items)
+    workdir = media.new_workdir()
     try:
-        items = json.loads(clothing_items or "[]")
+        head = await file.read(16)
+        kind = media.sniff(head)
+        if not kind:
+            raise HTTPException(415, "Unsupported file (use JPEG/PNG/GIF/WebP images or MP4/MOV/WebM video)")
+        limit_mb = s.max_video_mb if kind[0] == "video" else s.max_image_mb
+        path = workdir / f"source.{kind[2]}"
+        size = len(head)
+        with path.open("wb") as f:
+            f.write(head)
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit_mb * 1024 * 1024:
+                    raise HTTPException(413, f"File exceeds {limit_mb}MB")
+                f.write(chunk)
+    except BaseException:
+        media.cleanup(workdir)
+        raise
+    row = await _insert_pending(kind[0], original_source_url, aesthetic_tags, items)
+    enqueue(Job(row["id"], local_path=path, workdir=workdir))
+    return row
+
+
+class LinkIn(BaseModel):
+    url: HttpUrl
+    aesthetic_tags: list[str] = []
+
+
+@app.post("/api/ingest/link", dependencies=api, status_code=202)
+async def ingest_link(body: LinkIn):
+    """TikTok / Instagram / Pinterest / YouTube Shorts link, or a direct image/video URL."""
+    if not get_settings().s3_bucket:
+        raise HTTPException(503, "S3 storage is not configured")
+    url = str(body.url)
+    try:
+        await assert_public_url(url)
+    except ScrapeError as e:
+        raise HTTPException(422, str(e))
+    row = await _insert_pending("video", url, ",".join(body.aesthetic_tags), [])
+    enqueue(Job(row["id"], link=url))
+    return row
+
+
+@app.post("/api/outfits/{outfit_id}/reanalyze", dependencies=api, status_code=202)
+async def reanalyze(outfit_id: int):
+    async with pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE outfits SET analysis_status='pending', analysis_error=NULL WHERE id=$1 "
+            "AND analysis_status IN ('done','failed') RETURNING *", outfit_id)
+    if not row:
+        raise HTTPException(409, "Outfit not found or already being analysed")
+    stored = row["video_url"] or row["image_url"]
+    if stored:
+        enqueue(Job(outfit_id, link=stored, already_stored=True))
+    elif row["original_source_url"]:
+        enqueue(Job(outfit_id, link=row["original_source_url"]))
+    else:
+        raise HTTPException(409, "No media to analyse - please re-upload")
+    return dict(row)
+
+
+def _parse_items(raw: str) -> list:
+    try:
+        items = json.loads(raw or "[]")
         if not isinstance(items, list):
             raise ValueError
     except ValueError:
         raise HTTPException(422, "clothing_items must be a JSON array")
-    try:
-        url = await run_in_threadpool(storage.upload_image, data, *kind)
-    except Exception as e:
-        logging.exception("S3 upload failed")
-        raise HTTPException(502, "Storage upload failed") from e
+    return [{**i, "source": "user"} for i in items if isinstance(i, dict)]
+
+
+async def _insert_pending(media_type: str, source_url: str, tags_csv: str, items: list):
     async with pool().acquire() as conn:
         row = await conn.fetchrow(
-            "INSERT INTO outfits (image_url, original_source_url, aesthetic_tags, clothing_items) "
-            "VALUES ($1, NULLIF($2,''), $3, $4) RETURNING *",
-            url, original_source_url, _clean_tags(aesthetic_tags.split(",")), items,
+            "INSERT INTO outfits (media_type, original_source_url, aesthetic_tags, clothing_items, analysis_status) "
+            "VALUES ($1, NULLIF($2,''), $3, $4, 'pending') RETURNING *",
+            media_type, source_url, _clean_tags(tags_csv.split(",")), items,
         )
     return dict(row)
+
+
+@app.get("/api/catalog", dependencies=api)
+async def catalog(category: str | None = Query(None)):
+    """Every identified piece across the vault, flattened - your shopping reference."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT o.id AS outfit_id, o.image_url, o.aesthetic_tags, o.date_added, item
+               FROM outfits o, jsonb_array_elements(o.clothing_items) item
+               WHERE ($1::text IS NULL OR item->>'category' = $1)
+               ORDER BY o.date_added DESC""",
+            category,
+        )
+        stats = await conn.fetchrow(
+            """SELECT
+                 (SELECT coalesce(jsonb_agg(x ORDER BY x.n DESC), '[]') FROM
+                    (SELECT t AS tag, count(*) AS n FROM outfits, unnest(aesthetic_tags) t GROUP BY t ORDER BY n DESC LIMIT 12) x) AS top_tags,
+                 (SELECT coalesce(jsonb_agg(x ORDER BY x.n DESC), '[]') FROM
+                    (SELECT lower(c) AS color, count(*) AS n FROM outfits, unnest(color_palette) c GROUP BY lower(c) ORDER BY n DESC LIMIT 12) x) AS top_colors,
+                 (SELECT coalesce(jsonb_agg(x ORDER BY x.n DESC), '[]') FROM
+                    (SELECT i->>'brand' AS brand, count(*) AS n FROM outfits, jsonb_array_elements(clothing_items) i
+                     WHERE coalesce(i->>'brand','') <> '' GROUP BY i->>'brand' ORDER BY n DESC LIMIT 12) x) AS top_brands,
+                 (SELECT coalesce(jsonb_agg(x ORDER BY x.n DESC), '[]') FROM
+                    (SELECT i->>'category' AS category, count(*) AS n FROM outfits, jsonb_array_elements(clothing_items) i
+                     GROUP BY i->>'category' ORDER BY n DESC) x) AS categories"""
+        )
+    return {
+        "items": [{**r["item"], "outfit_id": r["outfit_id"], "image_url": r["image_url"],
+                   "aesthetic_tags": r["aesthetic_tags"], "date_added": r["date_added"]} for r in rows],
+        "profile": dict(stats),
+    }
 
 
 @app.get("/api/outfits", dependencies=api)

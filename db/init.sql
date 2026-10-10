@@ -26,3 +26,26 @@ CREATE TABLE IF NOT EXISTS drops (
 );
 
 CREATE INDEX IF NOT EXISTS idx_drops_status ON drops (status);
+
+-- v2: media analysis (safe to re-run on an existing database)
+ALTER TABLE outfits ALTER COLUMN image_url SET DEFAULT '';
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS media_type      TEXT NOT NULL DEFAULT 'image';
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS video_url       TEXT;
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS caption         TEXT;
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS summary         TEXT;
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS color_palette   TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS analysis_status TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS analysis_error  TEXT;
+ALTER TABLE outfits ADD COLUMN IF NOT EXISTS analyzed_at     TIMESTAMPTZ;
+
+DO $$ BEGIN
+    ALTER TABLE outfits ADD CONSTRAINT outfits_media_type_chk CHECK (media_type IN ('image', 'video'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE outfits ADD CONSTRAINT outfits_analysis_status_chk
+        CHECK (analysis_status IN ('pending', 'processing', 'done', 'failed'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_outfits_analysis_status ON outfits (analysis_status) WHERE analysis_status <> 'done';
