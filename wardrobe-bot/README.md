@@ -26,7 +26,7 @@ Every forwarded call carries `X-Bot-Secret: $BOT_SHARED_SECRET`. The bot serves 
 
 ## The four n8n workflows
 
-All four start with a **Webhook** node: method POST, path as below, Authentication = Header Auth (`X-Bot-Secret` = your `BOT_SHARED_SECRET`), Respond = *Immediately*. Reply with **Telegram → Send Message** using `chat_id` from the payload. Credentials: **Postgres** (host `host.docker.internal` if n8n runs on the Mac, or `db` if it's the bundled one; database/user `wardrobe`), **Telegram** (bot token), **Header Auth "Anthropic"** (`x-api-key`).
+All four start with a **Webhook** node: method POST, path as below, Authentication = Header Auth (`X-Bot-Secret` = your `BOT_SHARED_SECRET`), Respond = *Immediately*. Reply with **Telegram → Send Message** using `chat_id` from the payload. Credentials: **Postgres** (host `localhost`, port `DB_PORT` from `.env` if n8n runs via npm on the Mac, or `db:5432` for the bundled one; database/user `wardrobe`), **Telegram** (bot token), **Header Auth "Anthropic"** (`x-api-key`).
 
 | Path | Nodes |
 |---|---|

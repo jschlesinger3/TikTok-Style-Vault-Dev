@@ -83,8 +83,8 @@ echo
 bold "4/5  Public address (Cloudflare Tunnel)"
 echo "In Cloudflare Zero Trust > Networks > Tunnels, add a public hostname (e.g. style.yourdomain.com)"
 echo "pointing to http://localhost:8080 (cloudflared on the Mac) or http://web:80 (cloudflared in Docker)."
-DEF_URL=$(get_env PUBLIC_URL); [ "$DEF_URL" = "https://style.example.com" ] && DEF_URL=""
-ask PUBLIC_URL "Public URL, e.g. https://style.yourdomain.com" "$DEF_URL"
+DEF_URL=$(get_env PUBLIC_URL); [ -z "$DEF_URL" ] || [ "$DEF_URL" = "https://style.example.com" ] && DEF_URL="https://style.kalmankatse.bid"
+ask PUBLIC_URL "Public URL" "$DEF_URL"
 case "$PUBLIC_URL" in https://*) ;; *) PUBLIC_URL="https://${PUBLIC_URL#http://}" ;; esac
 PUBLIC_URL=${PUBLIC_URL%/}
 PROFILES=""
@@ -108,6 +108,16 @@ else
 fi
 echo
 
+# If Postgres (or anything) already listens on 5432 on this Mac, publish ours on 5433 instead.
+DB_PORT=$(get_env DB_PORT)
+if [ -z "$DB_PORT" ]; then
+  DB_PORT=5432
+  if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:5432 -sTCP:LISTEN >/dev/null 2>&1 \
+     && ! $DOCKER compose ps db 2>/dev/null | grep -q 5432; then
+    DB_PORT=5433
+    echo "Port 5432 is already in use on this Mac - the wardrobe database will be on 5433."
+  fi
+fi
 POSTGRES_PASSWORD=$(secret_or POSTGRES_PASSWORD)
 TELEGRAM_WEBHOOK_SECRET=$(secret_or TELEGRAM_WEBHOOK_SECRET)
 BOT_SHARED_SECRET=$(secret_or BOT_SHARED_SECRET)
@@ -128,7 +138,7 @@ BOT_SHARED_SECRET=$(q "$BOT_SHARED_SECRET")
 POSTGRES_USER=wardrobe
 POSTGRES_PASSWORD=$(q "$POSTGRES_PASSWORD")
 POSTGRES_DB=wardrobe
-DATABASE_URL=$(q "postgresql://wardrobe:$POSTGRES_PASSWORD@localhost:$(keep DB_PORT 5432)/wardrobe")
+DATABASE_URL=$(q "postgresql://wardrobe:$POSTGRES_PASSWORD@localhost:$DB_PORT/wardrobe")
 
 APP_USER=$(q "$APP_USER")
 APP_PASSWORD_HASH=$(q "$APP_PASSWORD_HASH")
@@ -136,7 +146,7 @@ PUBLIC_URL=$(q "$PUBLIC_URL")
 
 WEB_PORT=$(keep WEB_PORT 8080)
 API_PORT=$(keep API_PORT 8000)
-DB_PORT=$(keep DB_PORT 5432)
+DB_PORT=$DB_PORT
 N8N_BASE_URL=$(q "$N8N_BASE_URL")
 COMPOSE_PROFILES=$(q "$PROFILES")
 CLOUDFLARE_TUNNEL_TOKEN=$(q "$CLOUDFLARE_TUNNEL_TOKEN")
@@ -193,3 +203,4 @@ if [ -z "$ALLOWED_CHAT_IDS" ]; then
   echo "   Next: message your bot - it replies with your chat id. Re-run ./setup.sh and enter it."
 fi
 echo "   n8n: build the fit / worn / purge / audit workflows - see wardrobe-bot/README.md."
+echo "        n8n's Postgres credential: host localhost, port $DB_PORT, database + user wardrobe, password = POSTGRES_PASSWORD in .env"

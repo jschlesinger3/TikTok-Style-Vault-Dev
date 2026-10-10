@@ -12,7 +12,8 @@ the transferable formula, and how to recreate it from their own closet.
   Add a brand/model only when it is clearly identifiable AND it's an understated piece; never steer toward
   status brands or logo pieces.
 - fit_for_user: adapt it to THIS client's build and colouring - what to keep, what to change and why,
-  including the hem break and fabric weight to look for.
+  including the hem break and fabric weight to look for. If the look puts a wide leg on a slim or
+  low-profile shoe, say it breaks the Rule of the Anchor and give the footwear fix.
 - recreate_with: map each key piece to the closest item in the client's closet by id, or null if they own
   nothing close. Only use ids from the closet list; never invent ids.
 - missing_pieces: what they'd need to buy to get this look, most impactful first, described shoppably.

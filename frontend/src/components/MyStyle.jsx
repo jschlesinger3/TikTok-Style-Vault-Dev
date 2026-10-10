@@ -103,6 +103,13 @@ export default function MyStyle({ refreshKey, notify }) {
               </div>
             ))}
           </div>
+          {o.anchor_gap && (
+            <div className="rounded-xl border border-amber-700 bg-amber-950/40 p-4 text-sm text-amber-100">
+              <div className="font-semibold">⚓ Missing an anchor shoe</div>
+              <p className="mt-1 text-amber-200/80">You own wide-leg bottoms but no footwear with the volume to catch the hem, so the stylist
+                can't build those outfits. A Camion-style high-shaft structured boot or a chunky lug-sole derby is your #1 buy.</p>
+            </div>
+          )}
           {o.latest_audit && (
             <Section title={`Style direction · audit ${daysAgo(o.latest_audit.created_at)}`}>
               <p className="text-sm text-neutral-200">{o.latest_audit.style_direction}</p>

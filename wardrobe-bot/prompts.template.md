@@ -46,7 +46,7 @@ const text = (res.content || []).filter((b) => b.type === 'text').map((b) => b.t
 return [{ json: { result: JSON.parse(text), usage: res.usage } }]
 ```
 
-**Loading context.** One Postgres node ("Execute Query") returns everything in one row, ready for the Build nodes. Postgres credential in n8n: host `host.docker.internal` (n8n outside the compose stack) or `db` (n8n inside it), database/user `wardrobe`.
+**Loading context.** One Postgres node ("Execute Query") returns everything in one row, ready for the Build nodes. Postgres credential in n8n: host `localhost` and port `DB_PORT` from `.env` (n8n via npm on the Mac), or `db` / `5432` (bundled n8n); database and user `wardrobe`, password `POSTGRES_PASSWORD`.
 
 ```sql
 SELECT
@@ -94,6 +94,8 @@ Gets your closet list too, so it can map the look onto pieces you own. Output sc
 
 Includes the **couple coordination** rule: for dates, the stylist complements the partner's likely outfit with a subtle colour echo and balanced silhouettes, never matching. Tip: describe what the partner is wearing, e.g. `/fit dinner date, she's in a black slip dress with gold jewellery`.
 
+**Rule of the Anchor, enforced in code:** a wide-leg or baggy bottom is never paired with a low-profile shoe. Claude reports `anchor_check`, and the *Validate* node also checks the closet data itself (`wide-leg` / `chunky` / `low-profile` tags and silhouettes). If an outfit breaks the rule, the node swaps in your best chunky shoe (most versatile, least recently worn). If you own none, it clears the footwear slot and says which anchor shoe to buy.
+
 ```text
 {{STYLIST_TEXT}}
 ```
@@ -115,8 +117,8 @@ const slot = {
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['event_read', 'look_name', 'outfit', 'styling_instructions', 'why_it_works_for_you', 'partner_coordination',
-    'inspo_reference', 'swap_option', 'missing_piece_suggestion'],
+  required: ['event_read', 'look_name', 'outfit', 'anchor_check', 'styling_instructions', 'why_it_works_for_you',
+    'partner_coordination', 'inspo_reference', 'swap_option', 'missing_piece_suggestion'],
   properties: {
     event_read: {
       type: 'object', additionalProperties: false, required: ['formality', 'is_date', 'summary'],
@@ -130,6 +132,14 @@ const SCHEMA = {
     outfit: {
       type: 'object', additionalProperties: false, required: ['top', 'bottom', 'footwear', 'statement'],
       properties: { top: slot, bottom: slot, footwear: slot, statement: slot },
+    },
+    anchor_check: {
+      type: 'object', additionalProperties: false, required: ['bottom_is_wide', 'footwear_has_volume', 'hem_note'],
+      properties: {
+        bottom_is_wide: { type: 'boolean' },
+        footwear_has_volume: { type: 'boolean' },
+        hem_note: { type: 'string' },
+      },
     },
     styling_instructions: { type: 'array', items: { type: 'string' } },
     why_it_works_for_you: { type: 'string' },
@@ -190,24 +200,48 @@ return [{ json: { ...input, body } }]
 ### n8n Code node: "Validate + format fit" (after Parse Claude)
 
 ```js
-// Rejects hallucinated ids and formats the Telegram reply (copy-pasteable /worn line included).
+// Rejects hallucinated ids, enforces the Rule of the Anchor, formats the Telegram reply (with a /worn line).
 const r = $input.first().json.result
 const ctx = $('Build fit request').first().json
-const byId = new Map((ctx.closet || []).map((i) => [i.id, i]))
+const closet = ctx.closet || []
+const byId = new Map(closet.map((i) => [i.id, i]))
+const text_ = (i) => `${i.sub_category || ''} ${i.silhouette || ''}`.toLowerCase()
+const tags = (i) => i.aesthetic_tags || []
+const isWide = (i) => tags(i).includes('wide-leg') || /\b(wide|baggy|barrel|loose|palazzo)\b/.test(text_(i))
+const hasVolume = (i) => tags(i).includes('chunky') ||
+  (!tags(i).includes('low-profile') && /\b(boot|lug|chunky|platform|derby|runner|990|salomon)\b/.test(text_(i)) &&
+   !/\b(slim|low[- ]profile|flat|sleek|ballet|plimsoll|espadrille|slipper|driving)\b/.test(text_(i)))
 
 const slots = ['top', 'bottom', 'footwear', 'statement']
+const invalid = slots.map((s) => r.outfit[s].item_id).filter((id) => id && !byId.has(id))
+if (invalid.length) throw new Error(`Claude returned unknown item ids: ${invalid.join(', ')} - re-run`)
+
+// Rule of the Anchor: wide/baggy bottom => footwear with volume. Check Claude's self-report AND the closet data.
+const bottom = byId.get(r.outfit.bottom.item_id)
+const shoe = byId.get(r.outfit.footwear.item_id)
+const wide = r.anchor_check.bottom_is_wide || (bottom && isWide(bottom))
+let anchorNote = null
+if (wide && (!shoe || !hasVolume(shoe) || !r.anchor_check.footwear_has_volume)) {
+  const anchors = closet.filter((i) => i.category === 'footwear' && hasVolume(i))
+    .sort((a, b) => (b.versatility_score || 0) - (a.versatility_score || 0) || String(a.last_worn || '').localeCompare(String(b.last_worn || '')))
+  if (anchors.length) {
+    r.outfit.footwear = { item_id: anchors[0].id, why: 'Swapped in to anchor the wide leg - it has the volume to catch the hem.' }
+    anchorNote = `⚓ Shoe swapped to ${anchors[0].primary_color} ${anchors[0].sub_category}: wide legs need footwear with volume.`
+  } else if (shoe || r.outfit.footwear.item_id) {
+    r.outfit.footwear = { item_id: null, why: 'None of your shoes has the volume to anchor a wide leg.' }
+    anchorNote = '⚓ No anchor shoe in your closet - a Camion-style high-shaft boot or chunky lug-sole derby is your #1 buy.'
+  }
+}
+
 const lines = []
 const ids = []
-const invalid = []
 for (const s of slots) {
   const pick = r.outfit[s]
   const item = pick.item_id ? byId.get(pick.item_id) : null
-  if (pick.item_id && !item) invalid.push(pick.item_id)
   if (item) ids.push(item.id)
   const label = item ? `${item.primary_color} ${item.sub_category}` : '— nothing suitable in closet'
   lines.push(`• ${s[0].toUpperCase() + s.slice(1)}: ${label}\n   ${pick.why}`)
 }
-if (invalid.length) throw new Error(`Claude returned unknown item ids: ${invalid.join(', ')} - re-run`)
 
 const pc = r.partner_coordination
 const text = [
@@ -215,6 +249,8 @@ const text = [
   r.event_read.summary,
   '',
   ...lines,
+  anchorNote ? `\n${anchorNote}` : '',
+  r.anchor_check.hem_note ? `\n📏 Hem: ${r.anchor_check.hem_note}` : '',
   '',
   'How to wear it:',
   ...r.styling_instructions.map((x) => `– ${x}`),
@@ -227,7 +263,7 @@ const text = [
   ids.length ? `\nWearing it? Send:\n/worn ${ids.join(' ')}` : '',
 ].filter((x) => x !== '').join('\n')
 
-return [{ json: { chat_id: ctx.chat_id, text: text.slice(0, 4000), item_ids: ids } }]
+return [{ json: { chat_id: ctx.chat_id, text: text.slice(0, 4000), item_ids: ids, anchor_enforced: !!anchorNote } }]
 ```
 
 ---

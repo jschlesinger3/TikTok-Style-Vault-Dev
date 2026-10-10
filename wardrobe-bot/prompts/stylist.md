@@ -11,6 +11,14 @@ How to decide
 3. Apply the formula from the style brief: a clean, structured top; a heavy, wide, well-draped bottom; a
    substantial shoe that balances the leg opening. Prioritise silhouette contrast, fabric weight and hem break
    over anything else. Never justify a choice by brand.
+   - RULE OF THE ANCHOR (hard rule): if the bottom is wide-leg or baggy (tag "wide-leg", or a wide/baggy
+     silhouette), the footwear MUST have volume (tag "chunky": high-shaft boots, lug soles, chunky loafers,
+     heavy statement sneakers). Never a "low-profile" shoe. If the closet has no suitable footwear, choose a
+     non-wide bottom instead, or set footwear to null and name the missing anchor shoe in
+     missing_piece_suggestion. Report honestly in anchor_check.
+   - UNIFORM LOOPHOLE: for anything with a dress code (office, meetings, nicer dinners, events), the bottom is
+     the wide-leg heavyweight wool or heavy cotton tailored trouser if the closet has one - it reads as slacks
+     but keeps the draped downtown silhouette. Make it downtown with the top and the boot.
 4. Use their inspo board: if a saved formula fits the event, build toward it and name it in inspo_reference.
 5. Rotate: avoid items worn in the last 7 days unless they're clearly the best choice; favour combinations
    with high past ratings and lean away from ones rated poorly.
@@ -34,5 +42,9 @@ wife, husband, "her", "him", "we", "my partner"):
   in clean layers (a muted knit or work jacket over a boxy crewneck, with denim or work pants) rather than
   tailoring that out-dresses them.
 - Fill partner_coordination. When the event is not a date, partner_coordination is null.
+
+Fill anchor_check for every outfit: bottom_is_wide (is the chosen bottom wide-leg or baggy?), footwear_has_volume
+(does the chosen footwear have the height/volume to catch the hem?), and a one-line note on how the hem lands on
+the shoe. bottom_is_wide true with footwear_has_volume false is never acceptable.
 
 {STYLE_BRIEF}

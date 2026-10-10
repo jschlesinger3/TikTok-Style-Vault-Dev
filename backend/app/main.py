@@ -428,7 +428,16 @@ async def overview():
                      AND primary_color IS NOT NULL GROUP BY lower(primary_color) ORDER BY n DESC LIMIT 10) x) AS colors,
                  (SELECT coalesce(jsonb_agg(x ORDER BY x.n DESC), '[]') FROM
                     (SELECT t AS tag, count(*) AS n FROM items, unnest(aesthetic_tags) t WHERE status='active'
-                     GROUP BY t ORDER BY n DESC LIMIT 10) x) AS tags""")
+                     GROUP BY t ORDER BY n DESC LIMIT 10) x) AS tags,
+                 -- Rule of the Anchor: wide-leg bottoms need footwear with volume; flag when none is owned
+                 (EXISTS (SELECT 1 FROM items WHERE status='active' AND category='bottom'
+                           AND ('wide-leg' = ANY(aesthetic_tags)
+                                OR concat_ws(' ', sub_category, silhouette) ~* '\\m(wide|baggy|barrel|loose)\\M'))
+                  AND NOT EXISTS (SELECT 1 FROM items WHERE status='active' AND category='footwear'
+                           AND ('chunky' = ANY(aesthetic_tags)
+                                OR (NOT 'low-profile' = ANY(aesthetic_tags)
+                                    AND concat_ws(' ', sub_category, silhouette) ~* '\\m(boot|lug|chunky|platform|derby|runner)')))
+                 ) AS anchor_gap""")
         most_worn = await conn.fetch(
             "SELECT id, image_url, sub_category, primary_color, wear_count, last_worn FROM items "
             "WHERE status='active' AND wear_count > 0 ORDER BY wear_count DESC, last_worn DESC LIMIT 6")
